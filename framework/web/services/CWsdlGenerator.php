@@ -97,7 +97,7 @@
  * </ul>
  * The Group indicators can be also injected via custom soap definitions as XML node into WSDL structure.
  *
- * In the following example, class Foo will create a XML node <xsd:Foo><xsd:sequence> ... </xsd:sequence></xsd:Foo> with children attributes expected in pre-defined order.
+ * In the following example, class Foo will create a XML node &lt;xsd:Foo&gt;&lt;xsd:sequence&gt; ... &lt;/xsd:sequence&gt;&lt;/xsd:Foo&gt; with children attributes expected in pre-defined order.
  * <pre>
  * / *
  *   * @soap-indicator sequence
@@ -142,7 +142,7 @@
  *     public $date_of_birth;
  * }
  * </pre>
- * In the example above, WSDL generator would inject under XML node <xsd:User> the code block defined by @soap-wsdl lines.
+ * In the example above, WSDL generator would inject under XML node &lt;xsd:User&gt; the code block defined by @soap-wsdl lines.
  *
  * By inserting into SOAP URL link the parameter "?makedoc", WSDL generator will output human-friendly overview of all complex data types rather than XML WSDL file.
  * Each complex type is described in a separate HTML table and recognizes also the '@example' PHPDoc tag. See {@link buildHtmlDocs()}.
@@ -273,6 +273,7 @@ class CWsdlGenerator extends CComponent
 		$comment=preg_replace('/^\s*\**(\s*?$|\s*)/m','',$comment);
 		$params=$method->getParameters();
 		$message=array();
+		$headers=array();
 		$n=preg_match_all('/^@param\s+([\w\.]+(\[\s*\])?)\s*?(.*)$/im',$comment,$matches);
 		if($n>count($params))
 			$n=count($params);
@@ -297,13 +298,36 @@ class CWsdlGenerator extends CComponent
 
 		$this->messages[$methodName.'In']=$message;
 
-		if(preg_match('/^@return\s+([\w\.]+(\[\s*\])?)\s*?(.*)$/im',$comment,$matches))
-			$return=array($this->processType($matches[1]),trim($matches[2])); // type, doc
-		else
-			$return=null;
-		$this->messages[$methodName.'Response']=array('return'=>$return);
+		$n=preg_match_all('/^@header\s+([\w\.]+(\[\s*\])?)\s*?(.*)$/im',$comment,$matches);
+		for($i=0;$i<$n;++$i)
+		{
+			$name = $matches[1][$i];
+			$type = $this->processType($matches[1][$i]);
+			$doc = trim($matches[3][$i]);
+			if ($this->bindingStyle == self::STYLE_RPC)
+			{
+				$headers[$name]=array($type,$doc);
+			}
+			else
+			{
+				$this->elements[$name][$name]=array('type'=>$type);
+				$headers[$name] = array('element'=>$type);
+			}
+		}
 
-		if ($this->bindingStyle == self:STYLE_RPC)
+		if ($headers !== array())
+		{
+			$this->messages[$methodName.'Headers']=$headers;
+			$headerKeys = array_keys($headers);
+			$firstHeaderKey = reset($headerKeys);
+			$firstHeader = $headers[$firstHeaderKey];
+		}
+		else
+		{
+			$firstHeader = null;
+		}
+
+		if ($this->bindingStyle == self::STYLE_RPC)
 		{
 			if(preg_match('/^@return\s+([\w\.]+(\[\s*\])?)\s*?(.*)$/im',$comment,$matches))
 				$return=array(
@@ -329,7 +353,10 @@ class CWsdlGenerator extends CComponent
 			$doc=trim($matches[1]);
 		else
 			$doc='';
-		$this->operations[$methodName]=$doc;
+		$this->operations[$methodName]=array(
+			'doc'=>$doc,
+			'headers'=>$firstHeader === null ? null : array('input'=>array($methodName.'Headers', $firstHeaderKey)),
+		);
 	}
 
 	/**
@@ -648,8 +675,8 @@ class CWsdlGenerator extends CComponent
 		$portType=$dom->createElement('wsdl:portType');
 		$portType->setAttribute('name',$this->serviceName.'PortType');
 		$dom->documentElement->appendChild($portType);
-		foreach($this->operations as $name=>$doc)
-			$portType->appendChild($this->createPortElement($dom,$name,$doc));
+		foreach($this->operations as $name=>$operation)
+			$portType->appendChild($this->createPortElement($dom,$name,$operation['doc']));
 	}
 
 	/**
@@ -690,15 +717,16 @@ class CWsdlGenerator extends CComponent
 
 		$dom->documentElement->appendChild($binding);
 
-		foreach($this->operations as $name=>$doc)
-			$binding->appendChild($this->createOperationElement($dom,$name));
+		foreach($this->operations as $name=>$operation)
+			$binding->appendChild($this->createOperationElement($dom,$name,$operation['headers']));
 	}
 
 	/**
 	 * @param DOMDocument $dom Represents an entire HTML or XML document; serves as the root of the document tree
 	 * @param string $name method name
+	 * @param array $headers array like array('input'=>array(MESSAGE,PART),'output=>array(MESSAGE,PART))
 	 */
-	protected function createOperationElement($dom,$name)
+	protected function createOperationElement($dom,$name,$headers=null)
 	{
 		$operation=$dom->createElement('wsdl:operation');
 		$operation->setAttribute('name', $name);
@@ -724,6 +752,29 @@ class CWsdlGenerator extends CComponent
 		}
 		$input->appendChild($soapBody);
 		$output->appendChild(clone $soapBody);
+		if (is_array($headers))
+		{
+			if (isset($headers['input']) && is_array($headers['input']) && count($headers['input'])==2)
+			{
+				$soapHeader = $dom->createElement('soap:header');
+				foreach($operationBodyStyle as $attributeName=>$attributeValue) {
+					$soapHeader->setAttribute($attributeName, $attributeValue);
+				}
+				$soapHeader->setAttribute('message', $headers['input'][0]);
+				$soapHeader->setAttribute('part', $headers['input'][1]);
+				$input->appendChild($soapHeader);
+			}
+			if (isset($headers['output']) && is_array($headers['output']) && count($headers['output'])==2)
+			{
+				$soapHeader = $dom->createElement('soap:header');
+				foreach($operationBodyStyle as $attributeName=>$attributeValue) {
+					$soapHeader->setAttribute($attributeName, $attributeValue);
+				}
+				$soapHeader->setAttribute('message', $headers['output'][0]);
+				$soapHeader->setAttribute('part', $headers['output'][1]);
+				$output->appendChild($soapHeader);
+			}
+		}
 
 		$operation->appendChild($soapOperation);
 		$operation->appendChild($input);
@@ -766,7 +817,7 @@ class CWsdlGenerator extends CComponent
 	* <li>Max - maximum number of occurrences</li>
 	* <li>Description - Detailed description of the attribute.</li>
 	* <li>Example - Attribute example value if provided via PHPDoc property @example.</li>
-	* <ul>
+	* </ul>
 	*
 	* @param bool $return If true, generated HTML output will be returned rather than directly sent to output buffer
 	*/
